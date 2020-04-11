@@ -20,21 +20,27 @@ export function usePhotoGallery() {
     const [photos, setPhotos] = useState<IPhoto[]>([])
     const { get, set } = useStorage()
 
-    useEffect(() => {
-        const loadSaved = async () => {
-            const photosString = await get('photos')
-            const photos = (photosString ? JSON.parse(photosString) : []) as IPhoto[]
-            for (let photo of photos) {
-                const file = await readFile({
-                    path: photo.filepath,
-                    directory: FilesystemDirectory.Data
-                })
-                photo.base64 = `data:image/jpeg;base64,${file.data}`
+    useEffect(
+        () => {
+            const loadSaved = async () => {
+                const photosString = await get('photos')
+                const photosInStorage = (photosString ? JSON.parse(photosString) : []) as IPhoto[]
+                if (!isPlatform('hybrid')) {
+                    // running on the web
+                    for (let photo of photosInStorage) {
+                        const file = await readFile({
+                            path: photo.filepath,
+                            directory: FilesystemDirectory.Data
+                        })
+                        photo.base64 = `data:image/jpeg;base64,${file.data}`
+                    }
+                }
+                setPhotos(photosInStorage)
             }
-            setPhotos(photos)
-        }
-        loadSaved()
-    }, [get, readFile])
+            loadSaved()
+        }, 
+        [get, readFile]
+    )
 
     const takePhoto = async () => {
         const cameraPhoto = await getPhoto({
@@ -48,16 +54,27 @@ export function usePhotoGallery() {
         const newPhotos = [savedFileImage, ...photos]
         setPhotos(newPhotos)
 
-        set(PHOTO_STORAGE, JSON.stringify(newPhotos.map( p => {
-            // Don't save the base64 data, since it's already saved
-            const photoCopy = { ...p }
-            delete photoCopy.base64
-            return photoCopy
-        })))
+        set(PHOTO_STORAGE, 
+            isPlatform('hybrid') 
+                ? JSON.stringify(newPhotos) 
+                : JSON.stringify(newPhotos.map( p => {
+                    // Don't save the base64 data, since it's already saved
+                    const photoCopy = { ...p }
+                    delete photoCopy.base64
+                    return photoCopy
+                }))
+        )
     }
 
     const savePicture = async (photo: CameraPhoto, fileName: string) => {
-        const base64Data = await base64FromPath(photo.webPath!)
+        let base64Data: string;
+        // "hybrid" will detect Cordove or Capacitor
+        if (isPlatform('hybrid')) {
+            const file = await readFile({ path: photo.path! })
+            base64Data = file.data
+        } else {
+            base64Data = await base64FromPath(photo.webPath!)
+        }
         await writeFile({
             path: fileName,
             data: base64Data,
@@ -70,10 +87,25 @@ export function usePhotoGallery() {
             cameraPhoto: CameraPhoto, 
             fileName: string
         ): Promise<IPhoto> => {
-           return {
-               filepath: fileName,
-               webviewPath: cameraPhoto.webPath
-           } 
+            if (isPlatform('hybrid')) {
+                // get complete filepath of photo saved:
+                const fileUri = await getUri({
+                    directory: FilesystemDirectory.Data,
+                    path: fileName
+                })
+                // display the image by rewriting the 'file://' path to HTTP
+                // https://ionicframework.com/docs/core-concepts/webview#file-protocol
+                return {
+                    filepath: fileUri.uri,
+                    webviewPath: Capacitor.convertFileSrc(fileUri.uri)
+                }
+            } else {
+                // use webPath since it's already loaded into memory
+                return {
+                    filepath: fileName,
+                    webviewPath: cameraPhoto.webPath
+                } 
+            }   
     }
 
     return {
